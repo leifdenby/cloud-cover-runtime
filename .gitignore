@@ -64,3 +64,6 @@ submission/
 
 # Data
 runtime/data
+
+lightning_logs/
+data
