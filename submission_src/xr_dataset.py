@@ -63,6 +63,7 @@ def _load_dataset_meta(data_path, bands):
 
 
 def build_xr_ds(df, bands, transforms=None):
+    # https://blog.dask.org/2019/06/20/load-image-data
     samples = []
 
     def _read_chip(bands, row):
@@ -105,15 +106,18 @@ def build_xr_ds(df, bands, transforms=None):
 
     ds = xr.Dataset()
     da_chip = xr.DataArray(
-        _lazy_load(_read_chip, bands=bands), dims=("bands", "x", "y", "chip_id")
+        _lazy_load(_read_chip, bands=bands),
+        dims=("bands", "x", "y", "chip_id"),
+        coords=dict(bands=bands, chip_id=df.chip_id),
     )
     ds["chip"] = da_chip
+
     da_label = xr.DataArray(
-        _lazy_load(_read_label), dims=("x", "y", "chip_id")
+        _lazy_load(_read_label),
+        dims=("x", "y", "chip_id"),
+        coords=dict(chip_id=df.chip_id),
     )
     ds["label"] = da_label
-
-    ds = ds.assign_coords(bands=bands, chip_id=df.chip_id)
 
     # ds = ds.assign_coords(bands=bands)
     return ds
@@ -130,6 +134,7 @@ def main(data_path: os.PathLike, bands):
     for specific set of channels
     """
     from dask.distributed import Client
+
     client = Client()
     logger.info(client)
 
@@ -147,10 +152,9 @@ def main(data_path: os.PathLike, bands):
 
     for cond, fp, df in zip(conditions, fps, [df_train, df_val]):
         logger.info(f"create dataset for {cond}")
-        df = df.sample(n=1000)
         ds = build_xr_ds(df=df, bands=bands)
 
-        ds = ds.chunk(dict(chip_id=500))
+        ds = ds.chunk(dict(chip_id=100))
         ds.to_zarr(fp)
         print(f"saved to {fp}")
 
