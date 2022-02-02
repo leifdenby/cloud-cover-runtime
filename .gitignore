@@ -67,3 +67,4 @@ runtime/data
 
 lightning_logs/
 data
+*.zarr/
