@@ -68,3 +68,4 @@ runtime/data
 lightning_logs/
 data
 *.zarr/
+dask-worker-space/

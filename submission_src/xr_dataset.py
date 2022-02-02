@@ -1,6 +1,8 @@
 import os
 import random
 from pathlib import Path
+import dask
+import dask.array as daskarray
 
 import numpy as np
 import pandas as pd
@@ -63,11 +65,11 @@ def _load_dataset_meta(data_path, bands):
 def build_xr_ds(df, bands, transforms=None):
     samples = []
 
-    for _, row in tqdm(df.iterrows(), total=len(df)):
-        # Loads an n-channel image from a chip-level dataframe
+    def _read_chip(bands, row):
         band_arrs = []
         for band in bands:
-            with rasterio.open(getattr(row, f"{band}_path")) as b:
+            fp = getattr(row, f"{band}_path")
+            with rasterio.open(fp) as b:
                 band_arr = b.read(1).astype("float32")
                 band_arrs.append(band_arr)
         x_arr = np.stack(band_arrs, axis=-1)
@@ -77,30 +79,43 @@ def build_xr_ds(df, bands, transforms=None):
             x_arr = transforms(image=x_arr)["image"]
         x_arr = np.transpose(x_arr, [2, 0, 1])
 
-        # Prepare dictionary for item
-        item = {"chip_id": row.chip_id, "chip": x_arr}
+        return x_arr[..., np.newaxis]
 
+    def _read_label(row):
         with rasterio.open(row.label_path) as lp:
             y_arr = lp.read(1).astype("float32")
         # Apply same data augmentations to the label
         if transforms:
             y_arr = transforms(image=y_arr)["image"]
-        item["label"] = y_arr
+        return y_arr[..., np.newaxis]
 
-        ds_sample = xr.Dataset()
+    def _lazy_load(load_fn, **kwargs):
+        sample = load_fn(row=df.iloc[0], **kwargs)
 
-        da_chip = xr.DataArray(x_arr, dims=("bands", "y", "x"))
-        da_chip["chip_id"] = row.chip_id
-        ds_sample["chip"] = da_chip
+        array_lazy = [
+            dask.delayed(load_fn)(row=row, **kwargs) for _, row in df.iterrows()
+        ]
 
-        da_label = xr.DataArray(y_arr, dims=("y", "x"))
-        da_label["chip_id"] = row.chip_id
-        ds_sample["label"] = da_label
+        array_lazy = [
+            daskarray.from_delayed(x, shape=sample.shape, dtype="float32")
+            for x in tqdm(array_lazy)
+        ]
 
-        samples.append(ds_sample)
+        return daskarray.concatenate(array_lazy, axis=-1)
 
-    ds = xr.concat(samples, dim="chip_id")
-    ds = ds.assign_coords(bands=bands)
+    ds = xr.Dataset()
+    da_chip = xr.DataArray(
+        _lazy_load(_read_chip, bands=bands), dims=("bands", "x", "y", "chip_id")
+    )
+    ds["chip"] = da_chip
+    da_label = xr.DataArray(
+        _lazy_load(_read_label), dims=("x", "y", "chip_id")
+    )
+    ds["label"] = da_label
+
+    ds = ds.assign_coords(bands=bands, chip_id=df.chip_id)
+
+    # ds = ds.assign_coords(bands=bands)
     return ds
 
 
@@ -114,12 +129,14 @@ def main(data_path: os.PathLike, bands):
     From training data CSV create zarr-based datasets for use during training
     for specific set of channels
     """
-    conditions = ["train", "val"]
-    f_id = '_'.join(sorted(bands))
+    from dask.distributed import Client
+    client = Client()
+    logger.info(client)
 
-    fps = [
-        Path(f"{cond}__{f_id}.zarr") for cond in conditions
-    ]
+    conditions = ["train", "val"]
+    f_id = "_".join(sorted(bands))
+
+    fps = [Path(f"{cond}__{f_id}.zarr") for cond in conditions]
 
     for cond, fp in zip(conditions, fps):
         if fp.exists():
@@ -130,6 +147,7 @@ def main(data_path: os.PathLike, bands):
 
     for cond, fp, df in zip(conditions, fps, [df_train, df_val]):
         logger.info(f"create dataset for {cond}")
+        df = df.sample(n=1000)
         ds = build_xr_ds(df=df, bands=bands)
 
         ds = ds.chunk(dict(chip_id=500))
