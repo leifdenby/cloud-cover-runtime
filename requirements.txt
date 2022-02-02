@@ -1,0 +1,9 @@
+pandas
+pytorch-lightning
+pandas-path
+loguru
+pillow
+typer
+click
+tqdm
+numpy
