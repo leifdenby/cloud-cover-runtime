@@ -3,6 +3,7 @@ import pandas as pd
 import rasterio
 import torch
 from typing import Optional, List
+import xarray as xr
 
 
 class CloudDataset(torch.utils.data.Dataset):
@@ -64,5 +65,54 @@ class CloudDataset(torch.utils.data.Dataset):
             if self.transforms:
                 y_arr = self.transforms(image=y_arr)["image"]
             item["label"] = y_arr
+
+        return item
+
+
+class XRCloudDataset(torch.utils.data.Dataset):
+    """Reads in images, transforms pixel values, and serves a
+    dictionary containing chip ids, image tensors, and
+    label masks (where available).
+    """
+
+    def __init__(
+        self,
+        ds_path,
+        bands: List[str],
+        transforms: Optional[list] = None,
+    ):
+        """
+        Instantiate the CloudDataset class.
+
+        Args:
+            x_paths (pd.DataFrame): a dataframe with a row for each chip. There must be a column for chip_id,
+                and a column with the path to the TIF for each of bands
+            bands (list[str]): list of the bands included in the data
+            y_paths (pd.DataFrame, optional): a dataframe with a for each chip and columns for chip_id
+                and the path to the label TIF with ground truth cloud cover
+            transforms (list, optional): list of transforms to apply to the feature data (eg augmentations)
+        """
+        self.ds = xr.open_dataset(ds_path)
+        self.transforms = transforms
+        self.bands = bands
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        ds_sample = self.ds.isel(chip_id=idx)
+        x_arr = ds_sample.chip.values
+        if self.transforms:
+            x_arr = self.transforms(image=x_arr)["image"]
+
+        # Prepare dictionary for item
+        item = {"chip_id": ds_sample.chip_id, "chip": x_arr}
+
+        y_arr = ds_sample.label.values
+
+        if self.transforms:
+            y_arr = self.transforms(image=y_arr)["image"]
+
+        item["label"] = y_arr
 
         return item
